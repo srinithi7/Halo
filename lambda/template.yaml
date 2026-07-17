@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  HALO moderation pipeline: an SQS queue fed by the onRecognitionCreated
+  Cloud Function, a dead-letter queue for messages that repeatedly fail
+  processing, and a Lambda that moderates each post (AWS Comprehend +
+  rule-based checks) and writes the verdict back to Firestore.
+
+Parameters:
+  FirebaseSecretArn:
+    Type: String
+    Description: >
+      ARN of the Secrets Manager secret holding the Firebase service
+      account JSON used to write moderation results to Firestore. Create
+      this secret out-of-band (it must not be committed to source control)
+      and pass its ARN here.
+  ToxicityThreshold:
+    Type: Number
+    Default: 0.5
+    Description: Comprehend toxicity score (0-1) at or above which a post is rejected.
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+
+Resources:
+  ModerationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: halo-moderation-dlq
+      MessageRetentionPeriod: 1209600 # 14 days — max retention, for post-incident inspection
+
+  ModerationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: halo-moderation-queue
+      VisibilityTimeout: 180 # >= 6x the Lambda timeout, per SQS/Lambda guidance
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ModerationDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  ModerationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: halo-moderation-consumer
+      CodeUri: ./
+      Handler: index.handler
+      Environment:
+        Variables:
+          FIREBASE_SECRET_ARN: !Ref FirebaseSecretArn
+          TOXICITY_THRESHOLD: !Ref ToxicityThreshold
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: comprehend:DetectToxicContent
+              # DetectToxicContent has no resource-level permissions — it
+              # only supports the "*" resource.
+              Resource: "*"
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref FirebaseSecretArn
+      Events:
+        ModerationQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ModerationQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+Outputs:
+  ModerationQueueUrl:
+    Description: >
+      Paste this into functions/.env (or firebase functions:secrets:set) as
+      SQS_QUEUE_URL so the Cloud Function forwards new posts here.
+    Value: !Ref ModerationQueue
+  ModerationQueueArn:
+    Value: !GetAtt ModerationQueue.Arn
+  ModerationDeadLetterQueueUrl:
+    Description: Inspect this queue for posts that failed moderation 5 times.
+    Value: !Ref ModerationDeadLetterQueue
