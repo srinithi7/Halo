@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/recognition_post.dart';
+import 'recognition_submit_screen.dart';
 
 /// Displays live, approved recognition posts.
 ///
@@ -22,6 +23,15 @@ class RecognitionFeedScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Recognition Feed')),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => RecognitionSubmitScreen(groupId: groupId),
+          ),
+        ),
+        tooltip: 'Give a HALO',
+        child: const Icon(Icons.add),
+      ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
         stream: stream,
         builder: (context, snapshot) {
