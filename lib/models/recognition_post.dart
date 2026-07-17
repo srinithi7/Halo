@@ -40,10 +40,12 @@ class RecognitionPost {
     required this.postId,
     required this.senderId,
     required this.recipientId,
+    required this.recipientDisplayName,
     required this.message,
     required this.groupId,
     required this.createdAt,
     this.moderationStatus = ModerationStatus.pending,
+    this.glowCount = 0,
   });
 
   /// Firestore document id.
@@ -55,8 +57,16 @@ class RecognitionPost {
   /// to other users.
   final String senderId;
 
-  /// Reference id of the person being recognized.
+  /// The recognized user's uid — resolved from the phone number typed into
+  /// the submit screen. Used to query "recognitions received" for a user's
+  /// Profile screen; not a display value on its own (see
+  /// [recipientDisplayName]).
   final String recipientId;
+
+  /// Denormalized display name for [recipientId], captured at submit time
+  /// so the feed doesn't need a per-card user lookup. Safe to show in the
+  /// UI, unlike [recipientId] itself.
+  final String recipientDisplayName;
 
   /// The recognition content itself — what the person did.
   final String message;
@@ -69,6 +79,10 @@ class RecognitionPost {
 
   /// When the post was created (used for ordering + "x ago" display).
   final DateTime createdAt;
+
+  /// Number of times users have "glowed" (tapped appreciation on) this
+  /// post. Increment-only — see RecognitionService.glowRecognition.
+  final int glowCount;
 
   /// Builds a [RecognitionPost] from a Firestore document snapshot.
   ///
@@ -85,6 +99,7 @@ class RecognitionPost {
       postId: doc.id,
       senderId: data['senderId'] as String? ?? '',
       recipientId: data['recipientId'] as String? ?? '',
+      recipientDisplayName: data['recipientDisplayName'] as String? ?? 'Someone',
       message: data['message'] as String? ?? '',
       groupId: data['groupId'] as String? ?? '',
       moderationStatus: ModerationStatus.fromValue(
@@ -93,6 +108,7 @@ class RecognitionPost {
       createdAt: rawCreatedAt is Timestamp
           ? rawCreatedAt.toDate()
           : DateTime.now(),
+      glowCount: (data['glowCount'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -106,10 +122,12 @@ class RecognitionPost {
     return {
       'senderId': senderId,
       'recipientId': recipientId,
+      'recipientDisplayName': recipientDisplayName,
       'message': message,
       'groupId': groupId,
       'moderationStatus': moderationStatus.name,
       'createdAt': Timestamp.fromDate(createdAt),
+      'glowCount': glowCount,
     };
   }
 }

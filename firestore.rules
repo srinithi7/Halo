@@ -1,0 +1,41 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Public-ish profile record used to resolve a recognition recipient's
+    // phone number to their uid. Any signed-in user can read it (required
+    // for the lookup query in the give-recognition modal); a user may only
+    // write their own profile doc.
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Recognition posts. senderId must match the authenticated writer, so
+    // no one can forge posts as another user — the client never displays
+    // senderId, but this rule prevents it from being spoofed at write time
+    // too. moderationStatus is only ever changed by the moderation Lambda,
+    // which writes via the Admin SDK and bypasses these rules entirely.
+    // The only client-side update allowed is glowCount, and only that
+    // field — message/senderId/moderationStatus stay immutable from the
+    // client either way.
+    match /recognitions/{postId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.senderId == request.auth.uid;
+      allow update: if request.auth != null
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['glowCount']);
+      allow delete: if false;
+    }
+
+    // SafeWalk incident reports — fully anonymous, so creation is open to
+    // anyone (including unauthenticated/anonymous sessions), matching the
+    // "no userId or device id ever stored" invariant on the model itself.
+    match /incidents/{incidentId} {
+      allow create: if true;
+      allow read: if request.auth != null;
+      allow update, delete: if false;
+    }
+  }
+}

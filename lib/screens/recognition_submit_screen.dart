@@ -1,20 +1,30 @@
+import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/material.dart';
-
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../models/recognition_post.dart';
+import '../theme/app_theme.dart';
 
-/// MVP screen for submitting a new [RecognitionPost].
-///
-/// Requires a signed-in user (via [FirebaseAuth]) — the current user's uid
-/// is used as `senderId` purely for internal moderation/abuse tracing, and
-/// is never displayed anywhere on this screen or passed to any widget that
-/// renders to other users.
+/// Opens [RecognitionSubmitScreen] as a modal bottom sheet — the
+/// give-recognition flow triggered by the bottom nav's center button.
+Future<void> showRecognitionSubmitSheet(BuildContext context, {required String groupId}) {
+  return showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: bgSurface2,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(cardRadius)),
+    ),
+    builder: (_) => RecognitionSubmitScreen(groupId: groupId),
+  );
+}
+
+/// Screen where a logged-in user writes and submits an anonymous
+/// recognition post about a peer/teammate, shown as a modal bottom sheet.
 class RecognitionSubmitScreen extends StatefulWidget {
-  const RecognitionSubmitScreen({super.key, required this.groupId});
-
-  /// The community/group this recognition post belongs to.
   final String groupId;
+
+  const RecognitionSubmitScreen({super.key, required this.groupId});
 
   @override
   State<RecognitionSubmitScreen> createState() =>
@@ -22,128 +32,195 @@ class RecognitionSubmitScreen extends StatefulWidget {
 }
 
 class _RecognitionSubmitScreenState extends State<RecognitionSubmitScreen> {
-  final _formKey = GlobalKey<FormState>();
+  final _recipientController = TextEditingController();
   final _messageController = TextEditingController();
-
-  // Placeholder recipient list — swap for a real member/contact lookup later.
-  static const List<String> _recipientOptions = [
-    'Anonymous neighbor',
-    'Recipient A',
-    'Recipient B',
-    'Recipient C',
-  ];
-
-  String? _selectedRecipientId;
   bool _isSubmitting = false;
 
-  @override
-  void dispose() {
-    _messageController.dispose();
-    super.dispose();
-  }
+  Future<void> _submitRecognition() async {
+    final recipientPhone = '+91${_recipientController.text.trim()}';
+    final message = _messageController.text.trim();
 
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_recipientController.text.trim().isEmpty || message.isEmpty) {
+      _showSnack('Please fill in both fields', isError: true);
+      return;
+    }
 
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You must be signed in to submit a HALO.')),
-      );
+      _showSnack('You must be logged in to submit', isError: true);
       return;
     }
 
     setState(() => _isSubmitting = true);
 
-    final post = RecognitionPost(
-      postId: '', // Firestore assigns this on write.
-      senderId: currentUser.uid,
-      recipientId: _selectedRecipientId!,
-      message: _messageController.text.trim(),
-      groupId: widget.groupId,
-      moderationStatus: ModerationStatus.pending,
-      createdAt: DateTime.now(),
-    );
-
     try {
+      final matches = await FirebaseFirestore.instance
+          .collection('users')
+          .where('phoneNumber', isEqualTo: recipientPhone)
+          .limit(1)
+          .get();
+
+      if (matches.docs.isEmpty) {
+        _showSnack('No HALO user found with that phone number.', isError: true);
+        return;
+      }
+
+      final recipient = matches.docs.first;
+      if (recipient.id == currentUser.uid) {
+        _showSnack("You can't send a HALO to yourself.", isError: true);
+        return;
+      }
+
+      final post = RecognitionPost(
+        postId: '', // Firestore auto-generates this on add()
+        senderId: currentUser.uid, // internal only — never displayed
+        recipientId: recipient.id,
+        recipientDisplayName: recipient.data()['name'] as String? ?? 'Someone',
+        message: message,
+        groupId: widget.groupId,
+        moderationStatus: ModerationStatus.pending,
+        createdAt: DateTime.now(),
+      );
+
       await FirebaseFirestore.instance
           .collection('recognitions')
           .add(post.toFirestore());
 
       if (!mounted) return;
+      Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Submitted! Your HALO is pending review.')),
+        const SnackBar(content: Text('Submitted — your recognition is pending review.')),
       );
-      _messageController.clear();
-      setState(() => _selectedRecipientId = null);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not submit HALO: $e')),
-      );
+      _showSnack('Something went wrong: $e', isError: true);
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
+  void _showSnack(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError ? LucideIcons.alertCircle : LucideIcons.checkCircle2,
+              color: isError ? colorRed : accentGold,
+              size: 18,
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _recipientController.dispose();
+    _messageController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Give a HALO')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Recognize someone in your community.',
-                style: TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 24),
-              DropdownButtonFormField<String>(
-                initialValue: _selectedRecipientId,
-                decoration: const InputDecoration(
-                  labelText: 'Recipient',
-                  border: OutlineInputBorder(),
+    return Padding(
+      padding: EdgeInsets.only(
+        left: spacingPadding + 4,
+        right: spacingPadding + 4,
+        top: spacingPadding,
+        bottom: MediaQuery.of(context).viewInsets.bottom + spacingPadding + 4,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: borderColor,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                items: _recipientOptions
-                    .map(
-                      (name) => DropdownMenuItem(value: name, child: Text(name)),
+              ),
+            ),
+            const Row(
+              children: [
+                Icon(LucideIcons.heartHandshake, color: accentGold, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'Send Recognition',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18, color: textPrimary),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: const [
+                Icon(LucideIcons.userCircle, size: 16, color: textMuted),
+                SizedBox(width: 6),
+                Text('Who are you recognizing?', style: TextStyle(color: textMuted)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _recipientController,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: "Recipient's phone number",
+                prefixText: '+91  ',
+                prefixIcon: Icon(LucideIcons.phone, size: 18, color: accentGold),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: const [
+                Icon(LucideIcons.messageSquare, size: 16, color: textMuted),
+                SizedBox(width: 6),
+                Text('Your message', style: TextStyle(color: textMuted)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _messageController,
+              maxLines: 5,
+              decoration: const InputDecoration(
+                hintText: 'Share something you appreciate about them...',
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _isSubmitting ? null : _submitRecognition,
+              icon: _isSubmitting
+                  ? const SizedBox(
+                      height: 16,
+                      width: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: bgPrimary,
+                      ),
                     )
-                    .toList(),
-                onChanged: (value) =>
-                    setState(() => _selectedRecipientId = value),
-                validator: (value) =>
-                    value == null ? 'Please select a recipient' : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _messageController,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: 'What did they do?',
-                  border: OutlineInputBorder(),
-                  alignLabelWithHint: true,
+                  : const Icon(LucideIcons.send, size: 18),
+              label: Text(_isSubmitting ? 'Sending...' : 'Submit'),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(LucideIcons.shieldCheck, size: 13, color: textMuted),
+                SizedBox(width: 5),
+                Text(
+                  'Your identity stays private to other users',
+                  style: TextStyle(fontSize: 11, color: textMuted),
                 ),
-                validator: (value) => (value == null || value.trim().isEmpty)
-                    ? 'Please write a message'
-                    : null,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isSubmitting ? null : _submit,
-                child: _isSubmitting
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Submit'),
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ),
       ),
     );
