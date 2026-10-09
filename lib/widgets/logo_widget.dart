@@ -54,7 +54,8 @@ class _HaloLogoPainter extends CustomPainter {
     final dotPaint = Paint()..color = accentGold.withValues(alpha: 0.55);
     for (var i = 0; i < _dotCount; i++) {
       final angle = (2 * math.pi / _dotCount) * i - math.pi / 2;
-      final dotCenter = center + Offset(math.cos(angle), math.sin(angle)) * ringRadius;
+      final dotCenter =
+          center + Offset(math.cos(angle), math.sin(angle)) * ringRadius;
       canvas.drawCircle(dotCenter, dotRadius, dotPaint);
     }
 

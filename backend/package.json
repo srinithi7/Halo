@@ -1,0 +1,17 @@
+{
+  "name": "halo-photo-api",
+  "description": "Small mediating API for optional recognition photos — the Flutter app never talks to Neon directly (that would mean embedding the database credential in the client). Verifies each request's Firebase ID token, then stores/serves photo bytes in Neon Postgres.",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "migrate": "node migrate.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "firebase-admin": "^12.7.0"
+  }
+}

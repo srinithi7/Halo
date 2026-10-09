@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Read-only: lets the give-recognition screen pick a contact's phone
+         number. No WRITE_CONTACTS — the app never creates/edits contacts. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <application
         android:label="halo"
         android:name="${applicationName}"

@@ -120,7 +120,8 @@ class _NavItem extends StatelessWidget {
               width: 3,
               child: selected
                   ? const DecoratedBox(
-                      decoration: BoxDecoration(color: accentGold, shape: BoxShape.circle),
+                      decoration: BoxDecoration(
+                          color: accentGold, shape: BoxShape.circle),
                     )
                   : null,
             ),

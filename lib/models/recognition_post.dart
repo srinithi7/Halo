@@ -21,7 +21,26 @@ enum ModerationStatus {
   }
 }
 
-/// Core data model for a single anonymous recognition ("HALO") post.
+/// Who can see a [RecognitionPost] besides its sender and recipient.
+///
+/// Enforced at the Firestore rules level (see firestore.rules), not just
+/// hidden client-side — a [contacts]-scoped post is genuinely unreadable
+/// to a phone number outside [RecognitionPost.allowedPhoneNumbers], the
+/// same way [ModerationStatus.pending] posts are unreadable-as-approved.
+enum PostVisibility {
+  public,
+  contacts;
+
+  static PostVisibility fromValue(String? value) {
+    return PostVisibility.values.firstWhere(
+      (v) => v.name == value,
+      orElse: () => PostVisibility.public,
+    );
+  }
+}
+
+/// Core data model for a single recognition ("HALO") post — anonymous by
+/// default, with an opt-in identity reveal.
 ///
 /// IMPORTANT — anonymity contract:
 /// [senderId] identifies who created this post, but it exists purely for
@@ -30,11 +49,16 @@ enum ModerationStatus {
 /// this app's public/social data model.
 ///
 /// Any code that renders a [RecognitionPost] to a screen, feed, card, or
-/// notification MUST NOT read or display [senderId] in any form. There is
-/// deliberately no getter, display helper, or `toString()` override here
-/// that surfaces it — treat it the same as a credential, not a display
-/// field. If a UI-facing method on this class is ever added, it must not
-/// accept or return [senderId].
+/// notification MUST NOT read or display [senderId] in any form, ever —
+/// there is deliberately no getter, display helper, or `toString()`
+/// override here that surfaces it. This is separate from and stricter
+/// than [isAnonymous]/[senderDisplayName]: those two let a sender opt in
+/// to revealing their name, and once revealed it's shown everywhere this
+/// post appears — public feed, search, and the recipient's own "received"
+/// view alike — gated only on [isAnonymous] being false. [senderId] itself
+/// still must never be read/displayed regardless of that flag. If a
+/// UI-facing method on this class is ever added, it must not accept or
+/// return [senderId].
 class RecognitionPost {
   RecognitionPost({
     required this.postId,
@@ -45,7 +69,23 @@ class RecognitionPost {
     required this.groupId,
     required this.createdAt,
     this.moderationStatus = ModerationStatus.pending,
-    this.glowCount = 0,
+    this.glowedBy = const [],
+    this.isAnonymous = true,
+    this.senderDisplayName,
+    this.visibility = PostVisibility.public,
+    this.allowedPhoneNumbers = const [],
+    this.isUnseenHeroCandidate = false,
+    this.location,
+    this.areaName,
+    this.geohashPrefix,
+    this.locationPrecision,
+    this.category = 'general',
+    this.act,
+    this.feeling,
+    this.hashtags = const [],
+    this.isVisitor = false,
+    this.rippleTrail = const [],
+    this.expiresAt,
   });
 
   /// Firestore document id.
@@ -80,9 +120,91 @@ class RecognitionPost {
   /// When the post was created (used for ordering + "x ago" display).
   final DateTime createdAt;
 
-  /// Number of times users have "glowed" (tapped appreciation on) this
-  /// post. Increment-only — see RecognitionService.glowRecognition.
-  final int glowCount;
+  /// Uids of every user who has currently glowed (liked) this post — a
+  /// second tap from the same user removes theirs, it doesn't add another.
+  /// See RecognitionService.toggleGlow. [glowCount] is derived from this,
+  /// not stored separately, so the count can never drift from membership.
+  final List<String> glowedBy;
+
+  /// Number of users who have glowed this post — just `glowedBy.length`,
+  /// kept as a getter so display code doesn't need to know the storage
+  /// shape changed from a raw counter to a membership list.
+  int get glowCount => glowedBy.length;
+
+  /// Whether [uid] has currently glowed this post — drives the toggle
+  /// button's filled/outline state.
+  bool isGlowedBy(String uid) => glowedBy.contains(uid);
+
+  /// Whether the sender chose to stay anonymous (the default) rather than
+  /// reveal their identity. When false, [senderDisplayName] is shown
+  /// everywhere this post is displayed — public feed, search, and the
+  /// recipient's received view alike — not just to the recipient.
+  final bool isAnonymous;
+
+  /// Denormalized sender name, only ever populated when [isAnonymous] is
+  /// false. Safe to show anywhere this post is rendered once revealed.
+  final String? senderDisplayName;
+
+  /// Who besides the sender/recipient can see this post. Defaults to
+  /// [PostVisibility.public] — the original, and still normal, behavior.
+  final PostVisibility visibility;
+
+  /// Snapshot of the sender's own contacts' phone numbers (E.164, `+91…`),
+  /// taken at submit time — only populated when [visibility] is
+  /// [PostVisibility.contacts]. This is the Firestore rules allowlist for
+  /// who can read the post: a viewer whose own phone number (from their
+  /// Firebase Auth phone-auth token) isn't in this list can't read the
+  /// document at all, not just "it's hidden in this screen". Because
+  /// anyone who *can* read the post also sees this raw list, it does leak
+  /// "the sender has your number saved" to people in it — an accepted,
+  /// minor trade-off, not a bug.
+  final List<String> allowedPhoneNumbers;
+
+  final bool isUnseenHeroCandidate;
+  final GeoPoint? location;
+  final String? areaName;
+  final String? geohashPrefix;
+  final String? locationPrecision;
+
+  /// The high-level category of the recognition.
+  final String category;
+
+  /// Free-form act label, when present.
+  final String? act;
+
+  /// How the sender felt when they noticed it.
+  final String? feeling;
+
+  /// Normalized hashtags extracted from the message and/or set at send time.
+  final List<String> hashtags;
+
+  /// Whether this was a visitor-style recognition rather than a local one.
+  final bool isVisitor;
+
+  /// The ripple trail tracks people or communities who interacted with the post.
+  final List<String> rippleTrail;
+
+  /// The time after which the post should no longer be live in the main feed.
+  final DateTime? expiresAt;
+
+  bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
+
+  bool get isLive => !isExpired;
+
+  static List<String> extractHashtags(String text) {
+    final matches = RegExp(r'(?<!\w)#([A-Za-z0-9_]+)').allMatches(text);
+    final tags = <String>{};
+    for (final match in matches) {
+      final value = match.group(1)?.toLowerCase();
+      if (value != null && value.isNotEmpty) tags.add(value);
+    }
+    return tags.toList()..sort();
+  }
+
+  List<String> get normalizedHashtags {
+    if (hashtags.isNotEmpty) return hashtags;
+    return extractHashtags(message);
+  }
 
   /// Builds a [RecognitionPost] from a Firestore document snapshot.
   ///
@@ -94,21 +216,43 @@ class RecognitionPost {
   ) {
     final data = doc.data() ?? const <String, dynamic>{};
     final rawCreatedAt = data['createdAt'];
+    final rawExpiresAt = data['expiresAt'];
 
     return RecognitionPost(
       postId: doc.id,
       senderId: data['senderId'] as String? ?? '',
       recipientId: data['recipientId'] as String? ?? '',
-      recipientDisplayName: data['recipientDisplayName'] as String? ?? 'Someone',
+      recipientDisplayName:
+          data['recipientDisplayName'] as String? ?? 'Someone',
       message: data['message'] as String? ?? '',
       groupId: data['groupId'] as String? ?? '',
       moderationStatus: ModerationStatus.fromValue(
         data['moderationStatus'] as String?,
       ),
-      createdAt: rawCreatedAt is Timestamp
-          ? rawCreatedAt.toDate()
-          : DateTime.now(),
-      glowCount: (data['glowCount'] as num?)?.toInt() ?? 0,
+      createdAt:
+          rawCreatedAt is Timestamp ? rawCreatedAt.toDate() : DateTime.now(),
+      glowedBy:
+          (data['glowedBy'] as List<dynamic>?)?.cast<String>() ?? const [],
+      isAnonymous: data['isAnonymous'] as bool? ?? true,
+      senderDisplayName: data['senderDisplayName'] as String?,
+      visibility: PostVisibility.fromValue(data['visibility'] as String?),
+      allowedPhoneNumbers:
+          (data['allowedPhoneNumbers'] as List<dynamic>?)?.cast<String>() ??
+              const [],
+      isUnseenHeroCandidate: data['isUnseenHeroCandidate'] as bool? ?? false,
+      location: data['location'] as GeoPoint?,
+      areaName: data['areaName'] as String?,
+      geohashPrefix: data['geohashPrefix'] as String?,
+      locationPrecision: data['locationPrecision'] as String?,
+      category: data['category'] as String? ?? 'general',
+      act: data['act'] as String?,
+      feeling: data['feeling'] as String?,
+      hashtags: (data['hashtags'] as List<dynamic>?)?.cast<String>() ??
+          extractHashtags(data['message'] as String? ?? ''),
+      isVisitor: data['isVisitor'] as bool? ?? false,
+      rippleTrail:
+          (data['rippleTrail'] as List<dynamic>?)?.cast<String>() ?? const [],
+      expiresAt: rawExpiresAt is Timestamp ? rawExpiresAt.toDate() : null,
     );
   }
 
@@ -119,15 +263,37 @@ class RecognitionPost {
   /// read by trusted moderation code paths that need it, and Firestore
   /// security rules should restrict direct client reads of this field.
   Map<String, dynamic> toFirestore() {
-    return {
+    final data = <String, dynamic>{
       'senderId': senderId,
       'recipientId': recipientId,
       'recipientDisplayName': recipientDisplayName,
       'message': message,
       'groupId': groupId,
       'moderationStatus': moderationStatus.name,
+      'isAnonymous': isAnonymous,
+      'senderDisplayName': senderDisplayName,
       'createdAt': Timestamp.fromDate(createdAt),
-      'glowCount': glowCount,
+      'glowedBy': glowedBy,
+      'visibility': visibility.name,
+      'allowedPhoneNumbers': allowedPhoneNumbers,
+      'category': category,
+      'act': act,
+      'feeling': feeling,
+      'hashtags': hashtags.isEmpty ? extractHashtags(message) : hashtags,
+      'isVisitor': isVisitor,
+      'rippleTrail': rippleTrail,
+      'expiresAt': expiresAt == null ? null : Timestamp.fromDate(expiresAt!),
     };
+    if (isUnseenHeroCandidate &&
+        location != null &&
+        areaName != null &&
+        geohashPrefix != null) {
+      data['isUnseenHeroCandidate'] = true;
+      data['location'] = location;
+      data['areaName'] = areaName;
+      data['geohashPrefix'] = geohashPrefix;
+      data['locationPrecision'] = locationPrecision ?? 'approximateArea';
+    }
+    return data;
   }
 }

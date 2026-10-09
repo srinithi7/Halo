@@ -50,3 +50,7 @@ android/local.properties
 # FlutterFire-generated, contains Firebase project config — regenerate
 # locally via `flutterfire configure` rather than committing
 lib/firebase_options.dart
+
+# Python / ML demo
+ml/.venv/
+ml/__pycache__/

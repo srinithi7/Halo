@@ -36,16 +36,23 @@ const double spacingSmallGap = 8;
 class AppTheme {
   static ThemeData get darkTheme {
     final textTheme = TextTheme(
-      displayLarge: GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w800),
-      displayMedium: GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w700),
-      headlineLarge: GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w700, fontSize: 26),
-      headlineMedium: GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w700, fontSize: 20),
-      titleLarge: GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w600, fontSize: 18),
-      titleMedium: GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w600, fontSize: 15),
+      displayLarge:
+          GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w800),
+      displayMedium:
+          GoogleFonts.sora(color: textPrimary, fontWeight: FontWeight.w700),
+      headlineLarge: GoogleFonts.sora(
+          color: textPrimary, fontWeight: FontWeight.w700, fontSize: 26),
+      headlineMedium: GoogleFonts.sora(
+          color: textPrimary, fontWeight: FontWeight.w700, fontSize: 20),
+      titleLarge: GoogleFonts.sora(
+          color: textPrimary, fontWeight: FontWeight.w600, fontSize: 18),
+      titleMedium: GoogleFonts.sora(
+          color: textPrimary, fontWeight: FontWeight.w600, fontSize: 15),
       bodyLarge: GoogleFonts.inter(color: textPrimary, fontSize: 15),
       bodyMedium: GoogleFonts.inter(color: textPrimary, fontSize: 14),
       bodySmall: GoogleFonts.inter(color: textMuted, fontSize: 12),
-      labelLarge: GoogleFonts.inter(color: textPrimary, fontWeight: FontWeight.w600),
+      labelLarge:
+          GoogleFonts.inter(color: textPrimary, fontWeight: FontWeight.w600),
       labelSmall: GoogleFonts.inter(color: textMuted, fontSize: 12),
     );
 
@@ -88,8 +95,10 @@ class AppTheme {
           backgroundColor: accentGold,
           foregroundColor: bgPrimary,
           padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(buttonRadius)),
-          textStyle: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(buttonRadius)),
+          textStyle:
+              GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -121,14 +130,16 @@ class AppTheme {
         selectedColor: accentGoldDim,
         labelStyle: GoogleFonts.inter(color: textPrimary, fontSize: 13),
         side: const BorderSide(color: borderColor),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(chipRadius)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(chipRadius)),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       ),
       snackBarTheme: SnackBarThemeData(
         backgroundColor: bgSurface2,
         contentTextStyle: GoogleFonts.inter(color: textPrimary),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(buttonRadius)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(buttonRadius)),
       ),
       dividerColor: borderColor,
       iconTheme: const IconThemeData(color: textPrimary),

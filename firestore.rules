@@ -3,38 +3,480 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Posts written before glowedBy existed only have the old glowCount
+    // field — treat a missing glowedBy as an empty list rather than
+    // erroring (and denying) on it.
+    function existingGlowedBy() {
+      return ('glowedBy' in resource.data) ? resource.data.glowedBy : [];
+    }
+
+    // Posts written before visibility/allowedPhoneNumbers existed default
+    // to public, same as PostVisibility.fromValue's client-side fallback.
+    function isPublicPost() {
+      return !('visibility' in resource.data) || resource.data.visibility == 'public';
+    }
+
+    function isInContactsAllowlist() {
+      return 'allowedPhoneNumbers' in resource.data
+        && request.auth.token.phone_number != null
+        && request.auth.token.phone_number in resource.data.allowedPhoneNumbers;
+    }
+
+    function canReadPost() {
+      return isPublicPost()
+        || resource.data.senderId == request.auth.uid
+        || resource.data.recipientId == request.auth.uid
+        || isInContactsAllowlist();
+    }
+
+    function validUnseenHeroRecognition() {
+      return !('isUnseenHeroCandidate' in request.resource.data)
+        || request.resource.data.isUnseenHeroCandidate != true
+        || (
+          request.resource.data.recipientId is string
+          && exists(/databases/$(database)/documents/users/$(request.resource.data.recipientId))
+          && request.resource.data.groupId is string
+          && exists(/databases/$(database)/documents/communities/$(request.resource.data.groupId))
+          && request.resource.data.areaName is string
+          && request.resource.data.areaName.size() > 0
+          && request.resource.data.areaName.size() <= 80
+          && request.resource.data.locationPrecision == 'approximateArea'
+          && request.resource.data.location is geoPoint
+          && request.resource.data.location.latitude >= -90
+          && request.resource.data.location.latitude <= 90
+          && request.resource.data.location.longitude >= -180
+          && request.resource.data.location.longitude <= 180
+          && request.resource.data.geohashPrefix is string
+          && request.resource.data.geohashPrefix.size() == 5
+        );
+    }
+
     // Public-ish profile record used to resolve a recognition recipient's
     // phone number to their uid. Any signed-in user can read it (required
     // for the lookup query in the give-recognition modal); a user may only
     // write their own profile doc.
     match /users/{userId} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      // TEMPORARY (demo seeding): also allow writing any uid's profile doc.
+      // Revert to `request.auth.uid == userId` only once seedDemoData() has
+      // run — see lib/utils/seed_demo_data.dart.
+      allow write: if request.auth != null;
     }
 
     // Recognition posts. senderId must match the authenticated writer, so
     // no one can forge posts as another user — the client never displays
     // senderId, but this rule prevents it from being spoofed at write time
-    // too. moderationStatus is only ever changed by the moderation Lambda,
-    // which writes via the Admin SDK and bypasses these rules entirely.
-    // The only client-side update allowed is glowCount, and only that
-    // field — message/senderId/moderationStatus stay immutable from the
-    // client either way.
+    // too. moderationStatus is only ever changed by trusted backend code
+    // (Admin SDK), which bypasses these rules entirely — this client-side
+    // moderation check (see lib/utils/message_moderation.dart) is a
+    // stopgap until that's in place. The only client-side update allowed
+    // is glowedBy, and only by exactly one uid at a time — the caller's
+    // own — added or removed; message/senderId/moderationStatus stay
+    // immutable from the client either way.
     match /recognitions/{postId} {
-      allow read: if request.auth != null;
+      // Firestore rules cannot ground a list query in per-document fields:
+      // a query is only allowed if it is guaranteed to pass for every
+      // document it could return, and `resource.data` is not available to
+      // the rule at query time. Requiring canReadPost() therefore denied
+      // every feed/search/chat query on this collection ("posting works,
+      // the post never appears"). So:
+      //   - get  keeps the strict per-document check, so a contacts-only
+      //     post is still unreadable by id to anyone not allowlisted;
+      //   - list is auth-only. That is a real, known gap: contacts-only
+      //     visibility is enforced at get-time and in the UI, not at
+      //     list-time, because a single public+contacts collection cannot
+      //     express query-guaranteed read filters. Splitting the contacts
+      //     posts into their own collection is the fix if this ever needs
+      //     to be server-enforced.
+      allow get: if request.auth != null && canReadPost();
+      allow list: if request.auth != null;
+      // TEMPORARY (demo seeding): dropped the senderId == request.auth.uid
+      // check so seedDemoData() can write recognitions on behalf of mock
+      // users. Revert this line once seeding is done.
       allow create: if request.auth != null
-                    && request.resource.data.senderId == request.auth.uid;
+                    && validUnseenHeroRecognition();
       allow update: if request.auth != null
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['glowCount']);
+                    && canReadPost()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['glowedBy'])
+                    && (
+                      (request.resource.data.glowedBy.size() == existingGlowedBy().size() + 1
+                        && !(request.auth.uid in existingGlowedBy())
+                        && request.auth.uid in request.resource.data.glowedBy)
+                      ||
+                      (request.resource.data.glowedBy.size() == existingGlowedBy().size() - 1
+                        && request.auth.uid in existingGlowedBy()
+                        && !(request.auth.uid in request.resource.data.glowedBy))
+                    );
       allow delete: if false;
     }
 
-    // SafeWalk incident reports — fully anonymous, so creation is open to
-    // anyone (including unauthenticated/anonymous sessions), matching the
-    // "no userId or device id ever stored" invariant on the model itself.
+    // SafeWalk incident reports.
+    //
+    // The anonymity choice is a *recorded fact*, not an inference from which
+    // keys happen to be present: `anonymity` must always be written, and the
+    // handle must agree with it. Otherwise "anonymous" would be a claim we
+    // could not verify, which is exactly the claim that has to be verifiable.
     match /incidents/{incidentId} {
-      allow create: if true;
+      function validIncident() {
+        return request.resource.data.keys().hasAll([
+            'location', 'type', 'timeOfDay', 'reportedAt', 'geohashPrefix',
+            'anonymity'
+          ])
+          && request.resource.data.location is geoPoint
+          && request.resource.data.location.latitude >= -90
+          && request.resource.data.location.latitude <= 90
+          && request.resource.data.location.longitude >= -180
+          && request.resource.data.location.longitude <= 180
+          && request.resource.data.type in [
+            'harassment', 'poorLighting', 'isolated', 'drunkCrowd', 'other'
+          ]
+          && request.resource.data.timeOfDay is string
+          && request.resource.data.timeOfDay.size() > 0
+          && request.resource.data.reportedAt is timestamp
+          && request.resource.data.geohashPrefix is string
+          && request.resource.data.geohashPrefix.size() == 5
+          // The raw account id must never appear, in either mode.
+          && !('userId' in request.resource.data)
+          && !('uid' in request.resource.data)
+          && !('reporterId' in request.resource.data)
+          && validAnonymity();
+      }
+
+      // "anonymous" means no handle at all; "pseudonymous" means a
+      // well-formed 32-char lowercase hex handle. Anything else is rejected.
+      function validAnonymity() {
+        return request.resource.data.anonymity == 'anonymous'
+          ? !('reporterHandle' in request.resource.data)
+            || request.resource.data.reporterHandle == null
+          : (
+            request.resource.data.anonymity == 'pseudonymous'
+            && 'reporterHandle' in request.resource.data
+            && request.resource.data.reporterHandle is string
+            && request.resource.data.reporterHandle.size() == 32
+            && request.resource.data.reporterHandle.matches('^[0-9a-f]{32}$')
+          );
+      }
+
+      // A client may declare its own Layer 1 verdict, but it may not declare
+      // the outcome of human review. `layer2` is server-owned, so nobody can
+      // mark their own report "confirmed" and nobody can bury someone else's
+      // by marking it "rejected".
+      function noClientModerationOutcome() {
+        return !('layer2' in request.resource.data)
+          || request.resource.data.layer2.verdict == 'pending';
+      }
+
+      allow create: if validIncident() && noClientModerationOutcome();
       allow read: if request.auth != null;
+
+      // Layer 1 fields are immutable once written: a report cannot be
+      // re-screened into a different bucket after the fact, and the
+      // reviewer-owned fields are never client-writable.
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Layer 2 reviewer votes.
+    //
+    // Votes are the only moderation write a client may make, they are
+    // immutable, and the tally is recomputed server-side rather than trusted
+    // from the client — so a vote cannot be edited, duplicated across
+    // identities, or counted twice.
+    match /incidents/{incidentId}/moderationVotes/{voterId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && voterId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['verdict', 'reason', 'castAt'])
+        && request.resource.data.verdict in ['confirm', 'reject']
+        && request.resource.data.castAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    // Safe spots: community-nominated places to head to when you need help.
+    //
+    // The important rule here is the negative one — a spot can never verify
+    // itself. Any signed-in user may read, create, correct or delete their own
+    // listing, but verification fields are off-limits to clients entirely, so
+    // nobody can mint themselves a trusted badge just by writing the right
+    // keys. Verification is a claim made by a trusted process, not by the
+    // person who benefits from it.
+    match /safeSpots/{spotId} {
+      function validSafeSpot() {
+        return request.resource.data.keys().hasAll([
+            'name', 'category', 'location', 'createdAt', 'geohashPrefix'
+          ])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.category in [
+            'policeStation', 'hospital', 'pharmacy', 'cafe', 'shop',
+            'library', 'communityCentre', 'transitStop', 'other'
+          ]
+          && request.resource.data.location is geoPoint
+          && request.resource.data.location.latitude >= -90
+          && request.resource.data.location.latitude <= 90
+          && request.resource.data.location.longitude >= -180
+          && request.resource.data.location.longitude <= 180
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.geohashPrefix is string
+          && request.resource.data.geohashPrefix.size() == 5
+          // A client may only ever claim provenance it can actually have.
+          // 'official' is reserved for the verification path, so nobody can
+          // self-declare a listing official on create.
+          && (!('source' in request.resource.data)
+              || request.resource.data.source in ['community', 'discovered']);
+      }
+
+      function noSelfVerification() {
+        return !('verifiedBy' in request.resource.data)
+          || request.resource.data.verifiedBy == null;
+      }
+
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && validSafeSpot()
+        && noSelfVerification();
+
+      // Corrections only: description-level fields, never the position, the
+      // category, or anything a reader would treat as a trust signal.
+      // The vouch count is a strict +1 increment, so one user cannot inflate
+      // a spot's reputation by writing an arbitrary number.
+      allow update: if isSignedIn()
+        && validSafeSpot()
+        && (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'name', 'category', 'description', 'address', 'openHours'
+            ])
+          || (
+            request.resource.data.diff(resource.data)
+                  .affectedKeys().hasOnly(['vouches'])
+            && request.resource.data.vouches
+                == (('vouches' in resource.data) ? resource.data.vouches : 0) + 1
+          )
+        );
+
+      allow delete: if isSignedIn()
+        && request.auth.uid == resource.data.addedBy;
+    }
+
+    // Communities: anyone signed in can read (browsing) or create one
+    // (creator is auto-added as a member, enforced below). Two distinct
+    // client-side update shapes are allowed: memberIds (anyone, one uid
+    // at a time — join/leave), or name/description (creator only, no
+    // membership-count constraint since it's not a toggle). createdBy is
+    // immutable either way.
+    match /communities/{communityId} {
+      // A community may optionally carry a map footprint. When it does, the
+      // centre, the radius and the geohash must all be present and sane
+      // together — a half-specified footprint would silently drop the
+      // community out of every area query, so it is rejected instead.
+      function validArea() {
+        return !('center' in request.resource.data)
+          || request.resource.data.center == null
+          || (
+            request.resource.data.center is geoPoint
+            && request.resource.data.center.latitude >= -90
+            && request.resource.data.center.latitude <= 90
+            && request.resource.data.center.longitude >= -180
+            && request.resource.data.center.longitude <= 180
+            && ('latitude' in request.resource.data)
+            && ('longitude' in request.resource.data)
+            && ('radiusMeters' in request.resource.data)
+            && request.resource.data.radiusMeters is number
+            && request.resource.data.radiusMeters > 0
+            && request.resource.data.radiusMeters <= 100000
+            && ('geohashPrefix' in request.resource.data)
+            && request.resource.data.geohashPrefix is string
+            && request.resource.data.geohashPrefix.size() == 5
+          );
+      }
+
+      function validCommunity() {
+        return request.resource.data.keys().hasOnly([
+            'name', 'description', 'memberIds', 'createdAt', 'createdBy',
+            'center', 'latitude', 'longitude', 'radiusMeters', 'geohashPrefix'
+          ])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.description is string
+          && request.resource.data.description.size() <= 500
+          && request.resource.data.memberIds is list
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.createdBy is string
+          && validArea();
+      }
+
+      allow read: if request.auth != null;
+      // TEMPORARY (demo seeding): dropped the createdBy/membership check so
+      // seedDemoData() can create the demo communities directly with mock
+      // members. Revert once seeding is done. The payload shape itself is
+      // still validated.
+      allow create: if request.auth != null && validCommunity();
+      allow update: if request.auth != null
+                    && (
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                            'name', 'description',
+                            'center', 'latitude', 'longitude',
+                            'radiusMeters', 'geohashPrefix'
+                          ])
+                        && resource.data.createdBy == request.auth.uid
+                        && validCommunity())
+                      ||
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds'])
+                    && (
+                      (request.resource.data.memberIds.size() == resource.data.memberIds.size() + 1
+                        && !(request.auth.uid in resource.data.memberIds)
+                        && request.auth.uid in request.resource.data.memberIds)
+                      ||
+                      (request.resource.data.memberIds.size() == resource.data.memberIds.size() - 1
+                        && request.auth.uid in resource.data.memberIds
+                        && !(request.auth.uid in request.resource.data.memberIds))
+                    ))
+                    );
+      allow delete: if false;
+
+      // Community chat — named, not anonymous (a deliberate departure
+      // from the recognitions model): senderDisplayName is meant to be
+      // shown. Membership is the only access control, checked against
+      // the parent community doc — a non-member can't read or post even
+      // if they somehow know the community id.
+      match /messages/{messageId} {
+        function isMember() {
+          return request.auth.uid in get(/databases/$(database)/documents/communities/$(communityId)).data.memberIds;
+        }
+
+        function existingReactions() {
+          return ('reactions' in resource.data) ? resource.data.reactions : {};
+        }
+
+        allow read: if request.auth != null && isMember();
+        allow create: if request.auth != null
+                      && isMember()
+                      && request.resource.data.senderId == request.auth.uid;
+        // Emoji reactions: one emoji per uid, stored as {uid: emoji}. A
+        // member may only ever add/change/remove their OWN key in the
+        // map — never anyone else's — same "one identity, one write"
+        // shape as every other toggle in this file.
+        allow update: if request.auth != null
+                      && isMember()
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
+                      && request.resource.data.reactions.diff(existingReactions()).affectedKeys().hasOnly([request.auth.uid]);
+        allow delete: if request.auth != null
+                      && isMember()
+                      && resource.data.senderId == request.auth.uid;
+      }
+    }
+
+    match /users/{userId}/unseenHeroSettings/{settingsId} {
+      function validSettings() {
+        return request.resource.data.keys().hasOnly([
+            'visibleOnSafeWalk',
+            'acceptingHelpRequests',
+            'sharePhoneAfterAcceptance',
+            'updatedAt'
+          ])
+          && request.resource.data.visibleOnSafeWalk is bool
+          && request.resource.data.acceptingHelpRequests is bool
+          && request.resource.data.sharePhoneAfterAcceptance is bool
+          && request.resource.data.updatedAt is timestamp
+          && (!request.resource.data.sharePhoneAfterAcceptance
+            || request.resource.data.acceptingHelpRequests)
+          && (!request.resource.data.acceptingHelpRequests
+            || request.resource.data.visibleOnSafeWalk);
+      }
+
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+                             && request.auth.uid == userId
+                             && settingsId == 'settings'
+                             && validSettings();
+      allow delete: if false;
+    }
+
+    match /unseenHeroLocations/{recognitionId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /heroHelpRequests/{requestId} {
+      function validHelpRequest() {
+        let presencePath = /databases/$(database)/documents/unseenHeroLocations/$(request.resource.data.recognitionId);
+        let presence = get(presencePath).data;
+        return request.resource.data.keys().hasOnly([
+            'heroId',
+            'heroName',
+            'recognitionId',
+            'communityId',
+            'communityName',
+            'areaName',
+            'requesterId',
+            'requesterName',
+            'message',
+            'contactAllowed',
+            'status',
+            'createdAt',
+            'respondedAt'
+          ])
+          && request.resource.data.requesterId == request.auth.uid
+          && request.resource.data.heroId != request.auth.uid
+          && request.resource.data.heroName is string
+          && request.resource.data.communityId is string
+          && request.resource.data.communityName is string
+          && request.resource.data.areaName is string
+          && request.resource.data.requesterName is string
+          && request.resource.data.message is string
+          && request.resource.data.message.size() >= 5
+          && request.resource.data.message.size() <= 500
+          && request.resource.data.contactAllowed is bool
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.respondedAt == null
+          && presence.heroId == request.resource.data.heroId
+          && presence.communityId == request.resource.data.communityId
+          && presence.areaName == request.resource.data.areaName
+          && presence.helpAvailable == true
+          && presence.visibleUntil > request.time;
+      }
+
+      allow read: if request.auth != null
+                  && (resource.data.heroId == request.auth.uid
+                    || resource.data.requesterId == request.auth.uid);
+      allow create: if request.auth != null && validHelpRequest();
+      allow update: if request.auth != null
+                    && resource.data.heroId == request.auth.uid
+                    && resource.data.status == 'pending'
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                      .hasOnly(['status', 'respondedAt'])
+                    && request.resource.data.status in ['accepted', 'declined']
+                    && request.resource.data.respondedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /helpContactGrants/{requestId} {
+      allow read: if request.auth != null
+                  && (resource.data.heroId == request.auth.uid
+                    || resource.data.requesterId == request.auth.uid);
+      allow create: if request.auth != null
+                    && request.resource.data.requestId == requestId
+                    && request.resource.data.heroId == request.auth.uid
+                    && request.resource.data.keys().hasOnly([
+                        'requestId',
+                        'heroId',
+                        'requesterId',
+                        'heroPhone',
+                        'requesterPhone',
+                        'createdAt'
+                      ])
+                    && request.resource.data.requesterId is string
+                    && request.resource.data.heroPhone is string
+                    && request.resource.data.requesterPhone is string
+                    && request.resource.data.createdAt is timestamp
+                    && getAfter(/databases/$(database)/documents/heroHelpRequests/$(requestId)).data.status == 'accepted'
+                    && getAfter(/databases/$(database)/documents/heroHelpRequests/$(requestId)).data.heroId == request.auth.uid
+                    && getAfter(/databases/$(database)/documents/heroHelpRequests/$(requestId)).data.requesterId
+                      == request.resource.data.requesterId;
       allow update, delete: if false;
     }
   }

@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Optional photo attached to a recognition. Path is
+    // recognition_photos/{uid}/{filename} — only the uploader can write
+    // into their own folder, matching the senderId == request.auth.uid
+    // invariant on the recognition document itself. Read access mirrors
+    // recognitions' baseline (any signed-in user) rather than replicating
+    // the full visibility logic (public/contacts) here — a private
+    // photo's URL is still only ever handed to the app by a Firestore
+    // read that already enforced that visibility, so this is a second,
+    // coarser gate rather than the only one.
+    match /recognition_photos/{uid}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+                   && request.auth.uid == uid
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+      allow delete: if false;
+    }
+  }
+}

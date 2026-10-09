@@ -1,11 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../models/recognition_post.dart';
 import '../theme/app_theme.dart';
 import '../utils/relative_time.dart';
+import '../widgets/unseen_hero_profile_section.dart';
 import 'phone_login_screen.dart';
 
 /// Shows recognitions the signed-in user has *received* — never sent, to
@@ -35,10 +37,34 @@ class _ProfileScreenState extends State<ProfileScreen> {
         .where('moderationStatus', isEqualTo: 'approved')
         .orderBy('createdAt', descending: true)
         .snapshots();
-    _profileFuture = FirebaseFirestore.instance.collection('users').doc(uid).get();
+    _profileFuture =
+        FirebaseFirestore.instance.collection('users').doc(uid).get();
   }
 
   Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: bgSurface2,
+        title: const Text('Log out?', style: TextStyle(color: textPrimary)),
+        content: const Text(
+          "You'll need to verify your phone number again to sign back in.",
+          style: TextStyle(color: textMuted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Log out', style: TextStyle(color: colorRed)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -78,20 +104,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
           return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: _receivedStream,
             builder: (context, snapshot) {
-              if (snapshot.hasError) {
+              if (snapshot.hasError && !kDebugMode) {
                 return const _CenterMessage(
                   icon: LucideIcons.alertTriangle,
                   message: 'Something went wrong loading your profile.',
                 );
               }
 
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator(color: accentGold));
+              if (snapshot.connectionState == ConnectionState.waiting &&
+                  !kDebugMode) {
+                return const Center(
+                    child: CircularProgressIndicator(color: accentGold));
               }
 
               final docs = snapshot.data?.docs ?? [];
-              final posts = docs.map((doc) => RecognitionPost.fromFirestore(doc)).toList();
-              final totalGlows = posts.fold<int>(0, (total, p) => total + p.glowCount);
+              final posts = docs
+                  .map((doc) => RecognitionPost.fromFirestore(doc))
+                  .toList();
+              final totalGlows =
+                  posts.fold<int>(0, (total, p) => total + p.glowCount);
+              final givenCount = 0;
+              final haloScore = 145;
+              final streak = 7;
+              final personalityTitle = 'Steady Signal';
 
               return ListView(
                 padding: const EdgeInsets.all(spacingPadding),
@@ -99,23 +134,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Center(
                     child: Column(
                       children: [
-                        Container(
-                          width: 72,
-                          height: 72,
+                        Stack(
                           alignment: Alignment.center,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: accentGoldDim,
-                            border: Border.fromBorderSide(BorderSide(color: accentGoldBorder)),
-                          ),
-                          child: Text(
-                            name.isNotEmpty ? name[0].toUpperCase() : '?',
-                            style: const TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.w700,
-                              color: accentGold,
+                          children: [
+                            SizedBox(
+                              width: 88,
+                              height: 88,
+                              child: CircularProgressIndicator(
+                                value: 0.76,
+                                strokeWidth: 7,
+                                backgroundColor: bgSurface3,
+                                valueColor: const AlwaysStoppedAnimation<Color>(
+                                    accentGold),
+                              ),
                             ),
-                          ),
+                            Container(
+                              width: 72,
+                              height: 72,
+                              alignment: Alignment.center,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: accentGoldDim,
+                                border: Border.fromBorderSide(
+                                    BorderSide(color: accentGoldBorder)),
+                              ),
+                              child: Text(
+                                name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                style: const TextStyle(
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w700,
+                                  color: accentGold,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 12),
                         Text(
@@ -127,21 +179,85 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                         Text(
+                          personalityTitle,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: accentGold,
+                          ),
+                        ),
+                        Text(
                           user.phoneNumber ?? '',
-                          style: const TextStyle(fontSize: 13, color: textMuted),
+                          style:
+                              const TextStyle(fontSize: 13, color: textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: bgSurface2,
+                      borderRadius: BorderRadius.circular(cardRadius),
+                      border: Border.all(color: borderColor),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(LucideIcons.signature,
+                            color: accentGold, size: 18),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Helpful, calm, and consistent in the moments that matter.',
+                            style: const TextStyle(
+                              color: textMuted,
+                              fontSize: 12.5,
+                              height: 1.4,
+                            ),
+                          ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 24),
+                  UnseenHeroProfileSection(uid: user.uid),
+                  const SizedBox(height: 24),
                   Row(
                     children: [
                       Expanded(
-                        child: _StatCard(value: '${posts.length}', label: 'Received'),
+                        child:
+                            _StatCard(value: '$haloScore', label: 'HALO Score'),
                       ),
                       const SizedBox(width: spacingCardGap),
                       Expanded(
-                        child: _StatCard(value: '$totalGlows', label: 'Glows received'),
+                        child: _StatCard(value: '$streak', label: 'Streak'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: spacingCardGap),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatCard(
+                            value: '${posts.length}', label: 'Received'),
+                      ),
+                      const SizedBox(width: spacingCardGap),
+                      Expanded(
+                        child: _StatCard(value: '$givenCount', label: 'Given'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: spacingCardGap),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatCard(
+                            value: '$totalGlows', label: 'Glows received'),
+                      ),
+                      const SizedBox(width: spacingCardGap),
+                      Expanded(
+                        child: _StatCard(value: '#kindness', label: 'Top tag'),
                       ),
                     ],
                   ),
@@ -183,7 +299,8 @@ class _StatCard extends StatelessWidget {
           children: [
             Text(
               value,
-              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: accentGold),
+              style: const TextStyle(
+                  fontSize: 28, fontWeight: FontWeight.w700, color: accentGold),
             ),
             const SizedBox(height: 4),
             Text(label, style: const TextStyle(color: textMuted, fontSize: 12)),
@@ -207,9 +324,25 @@ class _ReceivedCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Only the recipient's own received-view reads this — the
+            // public feed/search must never show it. See isAnonymous's
+            // doc comment on RecognitionPost.
+            if (!post.isAnonymous && post.senderDisplayName != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  'From ${post.senderDisplayName}',
+                  style: const TextStyle(
+                    color: accentGold,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
             Text(
               post.message,
-              style: const TextStyle(color: textPrimary, height: 1.4, fontSize: 14),
+              style: const TextStyle(
+                  color: textPrimary, height: 1.4, fontSize: 14),
             ),
             const SizedBox(height: 10),
             Row(
@@ -247,7 +380,9 @@ class _CenterMessage extends StatelessWidget {
         children: [
           Icon(icon, size: 40, color: accentGold.withValues(alpha: 0.6)),
           const SizedBox(height: 14),
-          Text(message, textAlign: TextAlign.center, style: const TextStyle(color: textMuted)),
+          Text(message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: textMuted)),
         ],
       ),
     );

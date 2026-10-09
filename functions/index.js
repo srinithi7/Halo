@@ -10,9 +10,16 @@
 // queue, so downstream systems (e.g. a moderation pipeline) can pick up
 // new posts without polling Firestore directly.
 
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const {
+  onDocumentCreated,
+  onDocumentDeleted,
+  onDocumentUpdated,
+  onDocumentWritten,
+} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const { initializeApp } = require("firebase-admin/app");
+const { getFirestore, GeoPoint, Timestamp } = require("firebase-admin/firestore");
 
 // ---------------------------------------------------------------------------
 // Step 1: Read configuration from environment variables — never hardcode
@@ -113,4 +120,244 @@ exports.onRecognitionCreated = onDocumentCreated(
       // throw error;
     }
   }
+);
+
+initializeApp();
+const database = getFirestore();
+const UNSEEN_HERO_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const RECOGNITION_SYNC_FIELDS = [
+  "recipientId",
+  "isUnseenHeroCandidate",
+  "location",
+  "areaName",
+  "geohashPrefix",
+  "locationPrecision",
+  "createdAt",
+  "moderationStatus",
+  "groupId",
+  "message",
+];
+
+function presenceReference(recognitionId) {
+  return database.collection("unseenHeroLocations").doc(recognitionId);
+}
+
+function isGeoPoint(value) {
+  return value instanceof GeoPoint ||
+    (value &&
+      typeof value.latitude === "number" &&
+      typeof value.longitude === "number");
+}
+
+async function removeUnseenHeroPresence(recognitionId) {
+  const reference = presenceReference(recognitionId);
+  const snapshot = await reference.get();
+  if (snapshot.exists) {
+    await reference.delete();
+  }
+}
+
+async function syncUnseenHeroPresence(recognitionId, recognition) {
+  if (!recognition ||
+      recognition.isUnseenHeroCandidate !== true ||
+      recognition.moderationStatus !== "approved" ||
+      typeof recognition.recipientId !== "string" ||
+      !isGeoPoint(recognition.location) ||
+      typeof recognition.areaName !== "string" ||
+      typeof recognition.geohashPrefix !== "string" ||
+      !(recognition.createdAt instanceof Timestamp)) {
+    await removeUnseenHeroPresence(recognitionId);
+    return;
+  }
+
+  const heroId = recognition.recipientId;
+  const [settingsSnapshot, profileSnapshot, communitySnapshot] =
+    await Promise.all([
+      database
+        .collection("users")
+        .doc(heroId)
+        .collection("unseenHeroSettings")
+        .doc("settings")
+        .get(),
+      database.collection("users").doc(heroId).get(),
+      database.collection("communities").doc(recognition.groupId).get(),
+    ]);
+
+  const settings = settingsSnapshot.data();
+  if (!settings || settings.visibleOnSafeWalk !== true) {
+    await removeUnseenHeroPresence(recognitionId);
+    return;
+  }
+
+  const recognizedAtMillis = recognition.createdAt.toMillis();
+  const now = Date.now();
+  if (recognizedAtMillis > now + 5 * 60 * 1000 ||
+      now - recognizedAtMillis > UNSEEN_HERO_TTL_MS) {
+    await removeUnseenHeroPresence(recognitionId);
+    return;
+  }
+
+  const profile = profileSnapshot.data();
+  const community = communitySnapshot.data();
+  await presenceReference(recognitionId).set(
+    {
+      heroId,
+      heroName:
+        typeof profile?.name === "string" && profile.name.length > 0
+          ? profile.name
+          : "A HALO hero",
+      communityId: recognition.groupId,
+      communityName:
+        typeof community?.name === "string" && community.name.length > 0
+          ? community.name
+          : "HALO community",
+      areaName: recognition.areaName,
+      location: new GeoPoint(
+        recognition.location.latitude,
+        recognition.location.longitude
+      ),
+      message: recognition.message,
+      recognizedAt: recognition.createdAt,
+      helpAvailable: settings.acceptingHelpRequests === true,
+      sharePhoneAfterAcceptance: settings.sharePhoneAfterAcceptance === true,
+      visibleUntil: Timestamp.fromMillis(recognizedAtMillis + UNSEEN_HERO_TTL_MS),
+      geohashPrefix: recognition.geohashPrefix,
+    },
+    { merge: true }
+  );
+}
+
+async function syncUnseenHeroPresencesForUser(heroId) {
+  const recognitions = await database
+    .collection("recognitions")
+    .where("recipientId", "==", heroId)
+    .where("isUnseenHeroCandidate", "==", true)
+    .get();
+  const recognitionIds = new Set();
+  for (const snapshot of recognitions.docs) {
+    recognitionIds.add(snapshot.id);
+    await syncUnseenHeroPresence(snapshot.id, snapshot.data());
+  }
+
+  const existing = await database
+    .collection("unseenHeroLocations")
+    .where("heroId", "==", heroId)
+    .get();
+  await Promise.all(
+    existing.docs
+      .filter((snapshot) => !recognitionIds.has(snapshot.id))
+      .map((snapshot) => snapshot.ref.delete())
+  );
+}
+
+exports.syncUnseenHeroPresenceOnRecognitionCreated = onDocumentCreated(
+  "recognitions/{postId}",
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+    await syncUnseenHeroPresence(event.params.postId, snapshot.data());
+  }
+);
+
+exports.syncUnseenHeroPresenceOnRecognitionUpdated = onDocumentUpdated(
+  "recognitions/{postId}",
+  async (event) => {
+    const before = event.data?.before.data() || {};
+    const after = event.data?.after.data() || {};
+    const changed = RECOGNITION_SYNC_FIELDS.some(
+      (field) => JSON.stringify(before[field]) !== JSON.stringify(after[field])
+    );
+    if (changed) {
+      await syncUnseenHeroPresence(event.params.postId, after);
+    }
+  }
+);
+
+exports.removeUnseenHeroPresenceOnRecognitionDeleted = onDocumentDeleted(
+  "recognitions/{postId}",
+  async (event) => {
+    await removeUnseenHeroPresence(event.params.postId);
+  }
+);
+
+exports.syncUnseenHeroPresenceOnSettingsWritten = onDocumentWritten(
+  "users/{userId}/unseenHeroSettings/settings",
+  async (event) => {
+    await syncUnseenHeroPresencesForUser(event.params.userId);
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Layer 2 moderation: tally community votes on an incident report.
+//
+// The client may cast a vote but must never decide the outcome. This
+// function owns `incidents/{incidentId}.layer2` and `moderationStatus`, and
+// is the only writer of them — which is what stops anyone from marking their
+// own report "confirmed", or burying a report by marking it "rejected".
+//
+// Threshold and margin mirror ModerationService.applyCommunityReview on the
+// client so the UI can predict the outcome; the server is authoritative.
+// ---------------------------------------------------------------------------
+
+const MODERATION_REVIEW_THRESHOLD = 3;
+
+// Map incident moderation status to the Unseen Hero enum-free shape used on
+// the document. Kept as strings to avoid importing the Dart enum.
+const STATUS_UNDER_REVIEW = "underReview";
+const STATUS_CONFIRMED = "confirmed";
+const STATUS_REJECTED = "rejected";
+
+async function tallyIncidentModeration(incidentId) {
+  const db = getFirestore();
+  const incidentRef = db.collection("incidents").doc(incidentId);
+
+  const voteSnapshot = await incidentRef
+    .collection("moderationVotes")
+    .get();
+
+  let confirm = 0;
+  let reject = 0;
+  for (const doc of voteSnapshot.docs) {
+    const verdict = doc.data().verdict;
+    if (verdict === "confirm") confirm += 1;
+    else if (verdict === "reject") reject += 1;
+  }
+
+  const total = confirm + reject;
+  let nextStatus = null;
+  if (total >= MODERATION_REVIEW_THRESHOLD) {
+    // Strict majority; a tie leaves the report exactly where it was rather
+    // than defaulting to whichever answer is cheaper to compute.
+    if (confirm > reject) nextStatus = STATUS_CONFIRMED;
+    else if (reject > confirm) nextStatus = STATUS_REJECTED;
+  } else {
+    nextStatus = STATUS_UNDER_REVIEW;
+  }
+
+  await incidentRef.update({
+    layer2: {
+      verdict: nextStatus === STATUS_CONFIRMED
+        ? "confirmed"
+        : nextStatus === STATUS_REJECTED
+          ? "rejected"
+          : "pending",
+      votes: total,
+      confirm,
+      reject,
+    },
+    moderationStatus: nextStatus,
+  });
+
+  return { nextStatus, confirm, reject, total };
+}
+
+exports.tallyIncidentModerationOnVote = onDocumentCreated(
+  "incidents/{incidentId}/moderationVotes/{voterId}",
+  async (event) => {
+    const result = await tallyIncidentModeration(event.params.incidentId);
+    logger.info("Incident moderation tallied", {
+      incidentId: event.params.incidentId,
+      ...result,
+    });
+  },
 );

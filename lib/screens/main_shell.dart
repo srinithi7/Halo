@@ -35,7 +35,8 @@ class _MainShellState extends State<MainShell> {
       bottomNavigationBar: CustomBottomNav(
         selectedIndex: _index,
         onTabSelected: (index) => setState(() => _index = index),
-        onCenterTap: () => showRecognitionSubmitSheet(context, groupId: widget.groupId),
+        onCenterTap: () =>
+            showRecognitionSubmitSheet(context, groupId: widget.groupId),
       ),
     );
   }

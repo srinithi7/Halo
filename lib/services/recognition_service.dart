@@ -5,12 +5,52 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class RecognitionService {
   RecognitionService._();
 
-  /// Increments a post's glowCount by 1. Increment-only — there's no
-  /// un-glow, and no record of who glowed a given post.
-  static Future<void> glowRecognition(String postId) {
+  static const _recognitions = 'recognitions';
+
+  static Future<void> recordInteraction({
+    required String postId,
+    required String uid,
+    required String action,
+  }) async {
+    final ref =
+        FirebaseFirestore.instance.collection(_recognitions).doc(postId);
+    final update = <String, dynamic>{
+      'rippleTrail': FieldValue.arrayUnion([uid]),
+      'reachCount': FieldValue.increment(1),
+    };
+
+    switch (action) {
+      case 'pass':
+        update['passes'] = FieldValue.arrayUnion([uid]);
+        break;
+      case 'add':
+        update['adds'] = FieldValue.arrayUnion([uid]);
+        break;
+      case 'share':
+        update['shares'] = FieldValue.arrayUnion([uid]);
+        break;
+      default:
+        break;
+    }
+
+    await ref.update(update);
+  }
+
+  /// Toggles [uid]'s glow on a post: adds it if they haven't glowed yet,
+  /// removes it if they have. [wasGlowed] is the caller's current
+  /// (already-known, from the live stream) state — this decides which
+  /// direction to toggle rather than re-reading the document first, so a
+  /// tap always flips relative to what's on screen instead of racing a
+  /// fresh read against other concurrent taps.
+  static Future<void> toggleGlow(String postId, String uid,
+      {required bool wasGlowed}) {
     return FirebaseFirestore.instance
-        .collection('recognitions')
+        .collection(_recognitions)
         .doc(postId)
-        .update({'glowCount': FieldValue.increment(1)});
+        .update({
+      'glowedBy': wasGlowed
+          ? FieldValue.arrayRemove([uid])
+          : FieldValue.arrayUnion([uid]),
+    });
   }
 }

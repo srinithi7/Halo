@@ -26,6 +26,7 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
   final _phoneController = TextEditingController();
   final _otpController = TextEditingController();
   final _nameController = TextEditingController();
+  String _selectedCircle = 'PSG Campus';
 
   String? _verificationId;
   String? _fullPhoneNumber;
@@ -41,7 +42,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
 
   void _showSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _sendOtp() async {
@@ -71,7 +73,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
           _isSubmitting = false;
         });
       },
-      codeAutoRetrievalTimeout: (verificationId) => _verificationId = verificationId,
+      codeAutoRetrievalTimeout: (verificationId) =>
+          _verificationId = verificationId,
     );
   }
 
@@ -92,7 +95,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
 
   Future<void> _completeSignIn(PhoneAuthCredential credential) async {
     try {
-      final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+      final userCredential =
+          await FirebaseAuth.instance.signInWithCredential(credential);
       final user = userCredential.user;
       if (user == null) return;
 
@@ -101,7 +105,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
 
       if (hasProfile) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const MainShell(groupId: defaultGroupId)),
+          MaterialPageRoute(
+              builder: (_) => const MainShell(groupId: defaultGroupId)),
         );
       } else {
         setState(() {
@@ -130,10 +135,15 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
       uid: user.uid,
       phoneNumber: _fullPhoneNumber ?? user.phoneNumber ?? '',
       name: name,
+      circleName: _selectedCircle,
+      signature: 'Helping quietly, noticing clearly.',
+      haloScore: 120,
+      streak: 1,
     );
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const MainShell(groupId: defaultGroupId)),
+      MaterialPageRoute(
+          builder: (_) => const MainShell(groupId: defaultGroupId)),
     );
   }
 
@@ -188,7 +198,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
               ? const SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: bgPrimary),
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: bgPrimary),
                 )
               : const Text('Send OTP'),
         ),
@@ -214,7 +225,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
           decoration: const InputDecoration(
             labelText: '6-digit code',
             counterText: '',
-            prefixIcon: Icon(LucideIcons.shieldCheck, size: 18, color: accentGold),
+            prefixIcon:
+                Icon(LucideIcons.shieldCheck, size: 18, color: accentGold),
           ),
         ),
         const SizedBox(height: 12),
@@ -224,7 +236,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
               ? const SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: bgPrimary),
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: bgPrimary),
                 )
               : const Text('Verify'),
         ),
@@ -263,6 +276,23 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
             prefixIcon: Icon(LucideIcons.user, size: 18, color: accentGold),
           ),
         ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<String>(
+          initialValue: _selectedCircle,
+          decoration: const InputDecoration(
+            labelText: 'Join a nearby circle',
+            prefixIcon: Icon(LucideIcons.mapPin, size: 18, color: accentGold),
+          ),
+          items: const [
+            DropdownMenuItem(value: 'PSG Campus', child: Text('PSG Campus')),
+            DropdownMenuItem(value: 'RS Puram', child: Text('RS Puram')),
+            DropdownMenuItem(
+                value: 'Local Circle', child: Text('Local Circle')),
+          ],
+          onChanged: (value) {
+            if (value != null) setState(() => _selectedCircle = value);
+          },
+        ),
         const SizedBox(height: 20),
         ElevatedButton(
           onPressed: _isSubmitting ? null : _submitName,
@@ -270,7 +300,8 @@ class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
               ? const SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: bgPrimary),
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: bgPrimary),
                 )
               : const Text('Continue'),
         ),
